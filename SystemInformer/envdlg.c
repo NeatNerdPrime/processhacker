@@ -23,7 +23,6 @@ static CONST PH_STRINGREF EtUserEnvironmentKeyName = PH_STRINGREF_INIT(L"Environ
 static CONST PH_STRINGREF EtSystemEnvironmentKeyName = PH_STRINGREF_INIT(L"System\\CurrentControlSet\\Control\\Session Manager\\Environment");
 static HWND EtEnvironmentVariablesWindowHandle = NULL;
 static HANDLE EtEnvironmentVariablesWindowThreadHandle = NULL;
-static PH_EVENT EtEnvironmentVariablesInitializedEvent = PH_EVENT_INIT;
 
 /**
  * Represents an environment variable entry.
@@ -1354,10 +1353,7 @@ static INT_PTR CALLBACK EtEnvironmentVariablesDlgProc(
             else
                 PhCenterWindow(hwndDlg, GetParent(hwndDlg));
 
-            // N.B. Do not set focus here. The dialog is owned by the main window, whose thread is
-            // blocked waiting for this dialog to be created, and SetFocus on a window owned by a
-            // window on another thread synchronizes with that thread. Focus is set when the dialog
-            // is shown (WM_PH_SHOW_DIALOG) instead.
+            // N.B. The window is hidden here, focus is set when it's shown (WM_PH_SHOW_DIALOG).
 
             PhInitializeWindowTheme(hwndDlg, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
         }
@@ -1512,13 +1508,10 @@ static NTSTATUS EtEnvironmentVariablesWindowThreadStart(
         NULL
         );
 
-    if (EtEnvironmentVariablesWindowHandle)
-        PhRegisterDialog(EtEnvironmentVariablesWindowHandle);
-
-    PhSetEvent(&EtEnvironmentVariablesInitializedEvent);
-
     if (!EtEnvironmentVariablesWindowHandle)
     {
+        PhShowError2(NULL, L"Unable to create the window.", L"%s", L"");
+
         PhDeleteAutoPool(&autoPool);
 
         if (EtEnvironmentVariablesWindowThreadHandle)
@@ -1529,6 +1522,10 @@ static NTSTATUS EtEnvironmentVariablesWindowThreadStart(
 
         return STATUS_UNSUCCESSFUL;
     }
+
+    PhRegisterDialog(EtEnvironmentVariablesWindowHandle);
+
+    SendMessage(EtEnvironmentVariablesWindowHandle, WM_PH_SHOW_DIALOG, 0, 0);
 
     while (result = GetMessage(&message, NULL, 0, 0))
     {
@@ -1545,7 +1542,6 @@ static NTSTATUS EtEnvironmentVariablesWindowThreadStart(
     }
 
     PhDeleteAutoPool(&autoPool);
-    PhResetEvent(&EtEnvironmentVariablesInitializedEvent);
 
     if (EtEnvironmentVariablesWindowThreadHandle)
     {
@@ -1566,23 +1562,20 @@ VOID PhShowEnvironmentVariablesDialog(
     _In_ HWND ParentWindowHandle
     )
 {
+    // N.B. The window is created and shown by its own thread. Don't wait for it here, this thread
+    // has to keep processing messages or anything the new thread does that synchronizes with it
+    // deadlocks the user interface.
+
     if (!EtEnvironmentVariablesWindowThreadHandle)
     {
         if (!NT_SUCCESS(PhCreateThreadEx(&EtEnvironmentVariablesWindowThreadHandle, EtEnvironmentVariablesWindowThreadStart, ParentWindowHandle)))
         {
             PhShowError2(NULL, L"Unable to create the window.", L"%s", L"");
-            return;
         }
 
-        PhWaitForEvent(&EtEnvironmentVariablesInitializedEvent, NULL);
-
-        if (!EtEnvironmentVariablesWindowHandle)
-        {
-            PhResetEvent(&EtEnvironmentVariablesInitializedEvent);
-            PhShowError2(NULL, L"Unable to create the window.", L"%s", L"");
-            return;
-        }
+        return;
     }
 
-    PostMessage(EtEnvironmentVariablesWindowHandle, WM_PH_SHOW_DIALOG, 0, 0);
+    if (EtEnvironmentVariablesWindowHandle)
+        PostMessage(EtEnvironmentVariablesWindowHandle, WM_PH_SHOW_DIALOG, 0, 0);
 }
