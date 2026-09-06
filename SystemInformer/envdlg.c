@@ -42,6 +42,8 @@ typedef struct _ENV_VARIABLES_CONTEXT
 {
     HWND WindowHandle;
     HWND ListViewHandle;
+    HWND SearchBoxHandle;
+    ULONG_PTR SearchMatchHandle;
     HWND AddButtonHandle;
     HWND EditButtonHandle;
     HWND DeleteButtonHandle;
@@ -342,11 +344,34 @@ static VOID EtUpdateEnvironmentControls(
     );
 
 /**
- * Refreshes the list of environment variables in the dialog.
+ * Determines if an environment variable entry matches the search text.
+ *
+ * \param Context The environment variables context.
+ * \param Entry The environment variable entry.
+ * \return TRUE if the entry matches the search text, FALSE otherwise.
+ */
+static BOOLEAN EtMatchEnvironmentEntry(
+    _In_ PENV_VARIABLES_CONTEXT Context,
+    _In_ PENV_VARIABLE_ENTRY Entry
+    )
+{
+    if (!Context->SearchMatchHandle)
+        return TRUE;
+
+    if (PhSearchControlMatch(Context->SearchMatchHandle, &Entry->Name->sr))
+        return TRUE;
+    if (PhSearchControlMatch(Context->SearchMatchHandle, &Entry->Value->sr))
+        return TRUE;
+
+    return FALSE;
+}
+
+/**
+ * Populates the dialog with the environment variables matching the search text.
  *
  * \param Context The environment variables context.
  */
-static VOID EtRefreshEnvironmentVariables(
+static VOID EtPopulateEnvironmentVariables(
     _In_ PENV_VARIABLES_CONTEXT Context
     )
 {
@@ -354,15 +379,14 @@ static VOID EtRefreshEnvironmentVariables(
 
     ExtendedListView_SetRedraw(Context->ListViewHandle, FALSE);
     ListView_DeleteAllItems(Context->ListViewHandle);
-    EtClearEnvironmentEntries(Context);
-
-    EtReadEnvironmentKey(PH_KEY_CURRENT_USER, &EtUserEnvironmentKeyName, FALSE, Context->Entries);
-    EtReadEnvironmentKey(PH_KEY_LOCAL_MACHINE, &EtSystemEnvironmentKeyName, TRUE, Context->Entries);
 
     for (i = 0; i < Context->Entries->Count; i++)
     {
         PENV_VARIABLE_ENTRY entry = Context->Entries->Items[i];
         INT index;
+
+        if (!EtMatchEnvironmentEntry(Context, entry))
+            continue;
 
         index = PhAddListViewGroupItem(
             Context->ListViewHandle,
@@ -376,6 +400,38 @@ static VOID EtRefreshEnvironmentVariables(
 
     ExtendedListView_SetRedraw(Context->ListViewHandle, TRUE);
     EtUpdateEnvironmentControls(Context);
+}
+
+/**
+ * Refreshes the list of environment variables in the dialog.
+ *
+ * \param Context The environment variables context.
+ */
+static VOID EtRefreshEnvironmentVariables(
+    _In_ PENV_VARIABLES_CONTEXT Context
+    )
+{
+    EtClearEnvironmentEntries(Context);
+
+    EtReadEnvironmentKey(PH_KEY_CURRENT_USER, &EtUserEnvironmentKeyName, FALSE, Context->Entries);
+    EtReadEnvironmentKey(PH_KEY_LOCAL_MACHINE, &EtSystemEnvironmentKeyName, TRUE, Context->Entries);
+
+    EtPopulateEnvironmentVariables(Context);
+}
+
+_Function_class_(PH_SEARCHCONTROL_CALLBACK)
+static VOID NTAPI EtEnvironmentSearchControlCallback(
+    _In_ ULONG_PTR MatchHandle,
+    _In_opt_ PVOID Context
+    )
+{
+    PENV_VARIABLES_CONTEXT context = Context;
+
+    assert(context);
+
+    context->SearchMatchHandle = MatchHandle;
+
+    EtPopulateEnvironmentVariables(context);
 }
 
 static VOID EtUpdateEnvironmentControls(
@@ -1318,6 +1374,7 @@ static INT_PTR CALLBACK EtEnvironmentVariablesDlgProc(
         {
             context->WindowHandle = hwndDlg;
             context->ListViewHandle = GetDlgItem(hwndDlg, IDC_LIST);
+            context->SearchBoxHandle = GetDlgItem(hwndDlg, IDC_SEARCH);
             context->AddButtonHandle = GetDlgItem(hwndDlg, IDC_ENV_ADD);
             context->EditButtonHandle = GetDlgItem(hwndDlg, IDC_ENV_EDIT);
             context->DeleteButtonHandle = GetDlgItem(hwndDlg, IDC_ENV_DELETE);
@@ -1326,6 +1383,16 @@ static INT_PTR CALLBACK EtEnvironmentVariablesDlgProc(
             context->Elevated = !!PhGetOwnTokenAttributes().Elevated;
 
             PhSetApplicationWindowIcon(hwndDlg);
+
+            PhCreateSearchControl2(
+                hwndDlg,
+                context->SearchBoxHandle,
+                L"Search Environment Variables",
+                SETTING_SEARCH_ENVIRONMENT_REGEX,
+                SETTING_SEARCH_ENVIRONMENT_CASE_SENSITIVE,
+                EtEnvironmentSearchControlCallback,
+                context
+                );
 
             PhAddListViewColumn(context->ListViewHandle, 0, 0, 0, LVCFMT_LEFT, 160, L"Name");
             PhAddListViewColumn(context->ListViewHandle, 1, 1, 1, LVCFMT_LEFT, 320, L"Value");
@@ -1338,6 +1405,7 @@ static INT_PTR CALLBACK EtEnvironmentVariablesDlgProc(
             PhAddListViewGroup(context->ListViewHandle, ENV_GROUP_SYSTEM, L"System");
 
             PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);
+            PhAddLayoutItem(&context->LayoutManager, context->SearchBoxHandle, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
             PhAddLayoutItem(&context->LayoutManager, context->ListViewHandle, NULL, PH_ANCHOR_ALL);
             PhAddLayoutItem(&context->LayoutManager, context->AddButtonHandle, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_BOTTOM);
             PhAddLayoutItem(&context->LayoutManager, context->EditButtonHandle, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_BOTTOM);
